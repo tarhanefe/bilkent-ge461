@@ -1,0 +1,283 @@
+---
+title: "GE461 Homework 1"
+author: "Efe Tarhan 22002840, Hande Yaylalı 21902986"
+date: "`r Sys.Date()`"
+always_allow_html: true
+linkcolor: red
+output: 
+  bookdown::html_document2:
+    theme: readable
+    number_sections: false
+    code_folding: "hide"
+    toc: true
+  bookdown::pdf_document2:
+    number_sections: false
+#bibliography: GE461.bib
+link-citations: yes
+---
+
+## Introduction
+
+Data analysis and machine learning are two of the most important abilities for engineers today. Using techniques learned in the GE461 course, this report will analyze and use regression models to a dataset containing features about a team's baseball games over the period of a season. This work is being performed to discover how the attendance rate of the matches is influenced due to some parameters. The study begins by examining the dataset in terms of statistical relations between features, plots, and chi-square tests. The analyses are followed by directives for meaningful observations. Following the analysis, the data will be utilized to develop regression models. The performances of all of these models are evaluated and compared.
+
+```{r setup, include=FALSE}
+library(magrittr)
+library(tidyverse)
+library(car)
+library(knitr)
+library(kableExtra)
+library(lightgbm)
+library(pander)
+library(rpart)
+library(ggplot2)
+library(corrplot)
+opts_chunk$set(echo = TRUE)
+
+options(knitr.kable.NA =".") 
+kable_format <- if (is_html_output()) "html" else "latex"
+options(scipen = 999)
+```
+
+## Analysis - Data Description & Analysis
+
+The dataset that has been used for this project contains information about the 81 home plays of the baseball team The Dodgers in 2012. Each play data in the dataset has
+
+-   **Month**: A categorical value indicating the month that the game has been played,
+-   **Day**: A numerical value indicating the number of the day in the corresponding month,
+-   **Day of Week**: A categorical value consisting of the names of the days of the week.
+-   **Attendance**: A numerical feature consisting of number people attended to the event
+-   **Opponent**: A categorical indicator that consists of names of the opponent teams like "Pirates", "Giants" and "Padres",
+-   **Temperature:** A numerical feature consisting of temperature values ,
+-   **Skies**: A binary indicator of the weather with labels "Clear" and "Cloudy",
+-   **Part of the day (day or night)**: A binary indicator of the part of the day with labels "Day" and "Night" ,
+-   **Cap**: A binary feature with labels "YES" and "NO",
+-   **Shirt**: A binary feature with labels "YES" and "NO",
+-   **Fireworks**: A binary feature with labels "YES" and "NO",
+-   **Bobblehead**: A binary feature with labels "YES" and "NO" ,
+
+These attributes or column headers can also be accessed by using the following code snippet that connects the database to R and extract the column headers:
+
+```{r}
+library(RSQLite)
+con <-dbConnect(SQLite(), "dodgers.sqlite")
+dbListFields(con, "events")
+
+```
+
+The first 5 rows of the dataset is shown below where the data type of each feature can be examined according to the descriptions provided above.
+
+```{r}
+d0 <- dbReadTable(con,"events");
+head(d0,5)
+dbDisconnect(con)
+```
+
+The dataset will be analyzed in terms of its statistical properties and distribution of the features inside the dataset in an aim to understand the implicit features that may be effective on the decision of choosing a proper model for data fitting and prediction. The statistical properties of the dataset, i.e. the class frequencies for the categorical features and min, max, median upper and lower quartile values of the dataset are displayed by using the "summary()" function in R.
+
+Before creating the summary of the dataset the temperature values are converted from Fahrenheit to Centigrade because of the readers convenience in working with European system.
+
+```{r}
+# d0$month %>% unique()
+# d0$day_of_week %>% unique()
+d <- d0 %>% 
+  mutate(month = factor(month, levels = c("APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT")),
+         day_of_week = factor(day_of_week, levels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")),
+         temp = (temp-32)*5/9) %>%
+  mutate(across(where(is.character), factor))
+summary(d)
+```
+
+Besides simple frequencies, the given numbers does not provide significant and intuitive information about the trends and patterns that the data contain.For example, the average attendance rate is 41040 individuals, while the minimum number of attendees is 24312 and the highest number of attendees is 56000, which is the stadium's full capacity. Any significant observation cannot be done with these numbers on the feature of dataset. 2^nd^ order statistics and cross statistics between the features with visualization can develop further information.
+
+```{r fig.align='center'}
+ggplot(d, aes(x = month, y = attend)) + 
+  geom_violin(trim = FALSE, fill = "skyblue", color = "black") + 
+  stat_summary(fun = mean, geom = "point", aes(group = month), color = "darkblue") +
+  theme_minimal() +
+  labs(title = "Attendance by Month", 
+       x = "Month", 
+       y = "Attendance") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+As it can be observed, the dark blue points on the graph indicate the mean of the given month whereas the width of the violin plot shows the data frequency around a given attendance. It can be seen from the plots that the average monthly attendance levels rise in June, July and August which are the summer months.Yet, each number of attendance results in different patterns of frequency of the data.
+
+```{r fig.align='center'}
+ggplot(d, aes(x = day_of_week, y = attend)) + 
+  geom_boxplot(fill = "pink", color = "black") +
+  theme_minimal() +
+  labs(title = "Attendance Distribution by Day of Week", 
+       x = "Day of Week", 
+       y = "Attendance") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+Although it seems that the average attendance on Tuesday and Thursday seems to be distinguishable from the attendance rates on the other days of the week, there are no obvious reasons for those two days to be have higher rates than others. However, Monday holds the lowest mean attendance and the smallest number of attendees. This might be explained by the fact that it is the first day of the week and people ought to begin working. To explore other possible relationships, the amount of **day** and **night** games for each day of the week are analyzed if there is an affect on the time of the game with people's attendance.
+
+```{r fig.align='center'}
+ggplot(data = d, aes(x = day_of_week, fill = day_night)) + 
+  geom_bar(position = "stack") + 
+  labs(title = "Day vs. Night Games by Day of the Week", x = "Day of the Week", y = "Count of Games") +
+  theme_minimal() +
+  scale_fill_manual(values = c("Day" = "lightblue", "Night" = "darkblue"))
+
+```
+
+The bar chart illustrates that games are mainly held at evenings, but, Sunday is being the exception as hosting most of the games during daytime. This is acceptable given that weekdays may keep individuals occupied during the daytime. For this reason, only during weekday nights, individuals could attend the game. A possible relationship between temperature and number of attendance can be investigated by fitting a function to the density of data points for corresponding temperatures. The line is fitted to the plot using a local curve fitting algorithm called "loess" algorithm that can be used for exploring data better compared to polynomial fitting techniques.
+
+```{r fig.align='center'}
+  data_heatmap <- xtabs(attend ~ opponent + month, d)
+  heatmap(data_heatmap, margins = c(5, 10), col = cm.colors(100), scale = "none", xlab = "Month (7 Months of the Year)", ylab = "Opponent Teams")
+
+```
+
+If any correlations exist between two characteristics, the heatmap would indicate them. The month data is shown with the opponent data using a heatmap. As the hue of pink darkens, it indicates that more data is observed in that region. Thus, in August, spectators tend to attend games with the Rockies, Snakes, Giants, Cubs, and Marlins. However, heatmap do not reveal important relationship in this scenerio. 
+
+
+
+```{r fig.align='center'}
+  ggplot(d, aes(x = temp, y = attend)) + 
+  geom_point(color = "black") +
+  geom_smooth(formula = y ~ x, method = "loess", color = "red") +
+  labs(title = "Attendance vs. Temperature", x = "Temperature", y = "Attendance") +
+  theme_minimal()
+
+
+```
+
+As it can be seen there is a nonlinear relationship between the feature temperature and the attendance amounts. To find the linear relationship between the temperature and attendance the variable must be transformed.
+
+There are 4 features ("cap", "shirt", "bobblehead", "fireworks") that can be considered in the same category of objects or features of the game. There can be high statistical correlation between any of these two features. To check if these variables are statistically independent or not. A chi-squared test will be applied for all combinations.
+
+```{r}
+variables <- c("bobblehead", "cap", "shirt", "fireworks")
+
+df_mod <- d
+df_mod[variables] <- lapply(df_mod[variables], factor)
+df_mod <- na.omit(df_mod) 
+
+p_values <- matrix(nrow = length(variables), ncol = length(variables), dimnames = list(variables, variables))
+
+for (i in 1:length(variables)) {
+  for (j in 1:length(variables)) {
+    if (i == j) {
+      p_values[i, j] <- NA  # NA for self-comparison
+    } else {
+      contingency_table <- table(df_mod[[variables[i]]], df_mod[[variables[j]]])
+      test_result <- chisq.test(contingency_table, simulate.p.value = TRUE, B = 100000)
+      p_values[i, j] <- test_result$p.value
+    }
+  }
+}
+
+print(p_values)
+```
+
+From the results it can be seen that there is not a p-value smaller than 0.05 and therefore statistically dependent with one of the other variables. Therefore all of these values can be considered as statistically independent and can be used separately for linear regression.
+
+From another perspective it can be thought that fireworks can only be visible at night and therefore the "fireworks" feature must be "NO" when the "day_night" feature is "Day". To check the statistical relationship between the two variables, chi-squared test is applied to the features and the p-value appeared to be nearly equal to 0.05 which is the boundary of statistical significance.
+
+```{r}
+xtabs(~ day_night + fireworks, data = d) %>% chisq.test(simulate.p.value = TRUE, B = 1000)
+
+```
+
+The following graph summarizes the relationship between the given two features. It can be seen that no fireworks have been used when the game is played during daytime. This has created a statistical correlation between the two features
+
+```{r}
+ggplot(d, aes(x = day_night, fill = fireworks)) +
+  geom_bar(position = "stack") +
+  labs(title = "Day/Night Distribution by Fireworks",
+       x = "Day or Night",
+       y = "Count of Yes or No",
+       fill = "Fireworks") +
+  theme_minimal()
+
+```
+
+## Regression - Multiple Linear Regression
+
+By using the intuition developed from the previous section, a linear regression algorithm will be used by involving all variables inside the dataset to the task. Main goal of this implementation is to develop a good predictor that the data can be fit with low MSE.
+
+Initially a conventional multi-regression will be applied by using all of the variables without any dataset manipulation.
+
+```{r}
+lmod <- lm(attend ~ ., data = d)
+summary(lmod)
+```
+
+The average absolute error of the model is 5979 which can be improved. Enhancing the performance of predictive models can be achieved by incorporating new features that capture nonlinear relationships within the data. By adding these features to regression models, we can introduce complexity that better mirrors real-world phenomena. We will evaluate the impact of these newly introduced features by testing the performance of various models, specifically examining how the integration of mixed variables influences their predictive accuracy.
+
+A good application can be using a nonlinear transformation on the temperature feature since it has a nonlinear relationship with the attendance ratios which can be seen in the "Attendance vs Temperature" plot given above. The following relationship can be used for the transformation.
+
+$$
+temp_{aug} = \sqrt{\large| temp - 24\large|}
+$$
+
+```{r}
+d_aug1 <- d
+d_aug1$n_temp <- sqrt(abs(d_aug1$temp-24))
+```
+
+The new resultant feature and its relationship with the attendance is shown below
+
+```{r fig.align='center'}
+ggplot(d_aug1, aes(x = n_temp, y = attend)) + 
+  geom_point(color = "black") +
+  geom_smooth(formula = y ~ x, method = "loess", color = "red") +
+  labs(title = "Attendance vs. Augmented Temperature", x = "New Temperature Feature", y = "Attendance") +
+  theme_minimal()
+```
+
+```{r}
+lmod2 <- lm(attend ~ ., data = d_aug1)
+summary(lmod2)
+```
+
+From the results it can be seen that the residual standard error has been decreased to 5869 and statistical significance of the new temperature variable has increased which can be seen from the "t-test" values. The t probability has decreased to 0.1 from 0.97.
+
+From the table above it can be seen that the month variables have low significant effect on their own but summer months have relatively higher attendance rates. Creating a new feature as summer months and non-summer months can be generated to inspect its effect on performance. The "month" feature will be removed following the addition of recently created feature to the dataset
+
+```{r}
+d_aug2 <- d_aug1
+d_aug2$summer = ifelse(d_aug1$month %in% c("JUN", "JUL", "AUG"), 1, 0)
+d_aug2 <- d_aug2[, -which(names(d_aug2) %in% c("month"))]
+
+```
+
+```{r}
+lmod3 <- lm(attend ~ ., data = d_aug2)
+summary(lmod3)
+```
+
+As it can be seen the prediction accuracy has further increased by reducing the residual standard error to 5665. Similar operations can be applied on the features in order to increase the prediction accuracy. Comparison of the models can be done using the Analysis of Variance (ANOVA)
+
+```{r}
+sum <- anova(lmod,lmod2,lmod3)
+sum
+```
+
+From the results it can be argued that removing the months and changing it with a weaker feature damaged the model performance but the new temperature feature increased the performance of the model although it is not much significant according to the 0.05 boundary.
+
+The model "lmod2" is selected as the best linear regression model and the performance will be evaluated accordingly.
+
+```{r}
+d_aug1 %>% 
+  mutate(fitted = fitted(lmod2)) %>% 
+  ggplot(aes(fitted, attend)) +
+  geom_point() +
+  geom_abline() +
+  geom_smooth(se=FALSE)
+```
+
+The %90 confidence intervals for several variables can be seen below
+
+```{r}
+confint(lmod2, c("bobbleheadYES","shirtYES","capYES","fireworksYES"))
+
+```
+
+## Conclusion
+
+In conclusion, the dataset is evaluated using various combinations of attributes to uncover any relationships. Furthermore, many sorts of plots are utilized to apply the techniques learned in the course. We can see that some relationships are better represented with certain types of plots. It has been demonstrated that an arbitrary number of different linear regression models may be employed to forecast the provided dataset. The linear model with the updated temperature component outperformed the others that were examined. A thorough regression analysis was performed on the provided dataset, and the concepts of chi-squared test, multiple linear regression, ANOVA, and confidence intervals have been understood.
